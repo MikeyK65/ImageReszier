@@ -1,0 +1,239 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using ImageResize.Services
+@inject ImageResizeService ResizeService
+@inject FolderPickerService FolderPicker
+
+<PageTitle>Image Resizer</PageTitle>
+
+<div class="resize-container">
+    <h1 class="app-title">📐 Image Resizer</h1>
+    <p class="subtitle">Resize all images in a folder to your specified dimensions while preserving aspect ratio.</p>
+
+    <div class="card">
+        <div class="form-group">
+            <label for="folderPath">Source Folder</label>
+            <div class="input-row">
+                <input id="folderPath"
+                       class="form-control @(folderError ? "input-error" : "")"
+                       type="text"
+                       placeholder="e.g. C:\Users\you\Pictures\Screenshots"
+                       @bind="folderPath"
+                       @bind:event="oninput"
+                       disabled="@isBusy" />
+                <button class="btn-browse" @onclick="BrowseFolder" disabled="@isBusy">Browse…</button>
+            </div>
+            @if (folderError)
+            {
+                <span class="error-text">Folder not found or inaccessible.</span>
+            }
+        </div>
+
+        <div class="dimensions-row">
+            <div class="form-group half">
+                <label for="imgWidth">Target Width (px)</label>
+                <input id="imgWidth"
+                       class="form-control @(dimensionError ? "input-error" : "")"
+                       type="number"
+                       min="1"
+                       @bind="targetWidth"
+                       disabled="@isBusy" />
+            </div>
+            <div class="form-group half">
+                <label for="imgHeight">Target Height (px)</label>
+                <input id="imgHeight"
+                       class="form-control @(dimensionError ? "input-error" : "")"
+                       type="number"
+                       min="1"
+                       @bind="targetHeight"
+                       disabled="@isBusy" />
+            </div>
+        </div>
+        @if (dimensionError)
+        {
+            <span class="error-text">Width and height must be greater than zero.</span>
+        }
+
+        <div class="form-group checkbox-group">
+            <label class="checkbox-label">
+                <input type="checkbox" @bind="keepAspectRatio" disabled="@isBusy" />
+                Keep Aspect Ratio
+            </label>
+        </div>
+
+        <div class="presets-row">
+            <span class="presets-label">Common sizes:</span>
+            @foreach (var preset in Presets)
+            {
+                <button class="preset-btn" @onclick="() => ApplyPreset(preset)" disabled="@isBusy">
+                    @preset.Label
+                </button>
+            }
+        </div>
+
+        <div class="action-row">
+            <button class="btn-go" @onclick="RunResize" disabled="@isBusy">
+                @if (isBusy)
+                {
+                    <span class="spinner"></span>
+                    <span>Processing…</span>
+                }
+                else
+                {
+                    <span>▶ Go</span>
+                }
+            </button>
+            @if (results is not null || isBusy)
+            {
+                <button class="btn-clear" @onclick="Reset" disabled="@isBusy">Clear</button>
+            }
+        </div>
+    </div>
+
+    @if (isBusy && currentFile is not null)
+    {
+        <div class="status-card">
+            <span class="spinner-sm"></span> Processing: <strong>@currentFile</strong>
+        </div>
+    }
+
+    @if (results is not null)
+    {
+        var succeeded = results.Count(r => r.Success);
+        var failed = results.Count(r => !r.Success);
+
+        <div class="results-card">
+            <div class="results-header">
+                <span class="badge badge-success">✔ @succeeded saved</span>
+                @if (failed > 0)
+                {
+                    <span class="badge badge-error">✘ @failed failed</span>
+                }
+                <span class="output-path">→ <em>@outputFolder</em></span>
+            </div>
+
+            @if (results.Count == 0)
+            {
+                <p class="no-images">No supported images found in the selected folder.</p>
+            }
+            else
+            {
+                <table class="results-table">
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in results)
+                        {
+                            <tr class="@(r.Success ? "row-ok" : "row-fail")">
+                                <td>@r.FileName</td>
+                                <td>
+                                    @if (r.Success)
+                                    {
+                                        <span class="tag-ok">✔ OK</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="tag-fail" title="@r.ErrorMessage">✘ @r.ErrorMessage</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private string folderPath = string.Empty;
+    private bool keepAspectRatio = true;
+    private int targetWidth = 1290;
+    private int targetHeight = 2796;
+    private bool isBusy;
+    private bool folderError;
+    private bool dimensionError;
+    private string? currentFile;
+    private string? outputFolder;
+    private List<ResizeResult>? results;
+
+    private record Preset(string Label, int Width, int Height);
+
+    private static readonly Preset[] Presets =
+    [
+        new("iPhone 15 Pro Max (6.7\")", 1290, 2796),
+        new("iPhone 15 (6.1\")", 1179, 2556),
+        new("iPhone SE (4.7\")", 750, 1334),
+        new("iPad Pro 12.9\"", 2048, 2732),
+        new("iPad Pro 11\"", 1668, 2388),
+    ];
+
+    private void ApplyPreset(Preset preset)
+    {
+        targetWidth = preset.Width;
+        targetHeight = preset.Height;
+    }
+
+    private async Task RunResize()
+    {
+        folderError = false;
+        dimensionError = false;
+        results = null;
+        outputFolder = null;
+
+        if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+        {
+            folderError = true;
+            return;
+        }
+
+        if (targetWidth <= 0 || targetHeight <= 0)
+        {
+            dimensionError = true;
+            return;
+        }
+
+        isBusy = true;
+        currentFile = null;
+
+        try
+        {
+            outputFolder = ResizeService.ResolveOutputFolder(folderPath);
+
+            var progress = new Progress<string>(file =>
+            {
+                currentFile = file;
+                InvokeAsync(StateHasChanged);
+            });
+
+            results = await ResizeService.ResizeImagesAsync(folderPath, outputFolder, targetWidth, targetHeight, keepAspectRatio, progress);
+        }
+        finally
+        {
+            isBusy = false;
+            currentFile = null;
+        }
+    }
+
+    private async Task BrowseFolder()
+    {
+        var selected = await FolderPicker.PickFolderAsync(folderPath);
+        if (selected is not null)
+        {
+            folderPath = selected;
+            folderError = false;
+        }
+    }
+
+    private void Reset()
+    {
+        results = null;
+        outputFolder = null;
+        folderError = false;
+        dimensionError = false;
+    }
+}
